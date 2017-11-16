@@ -1,0 +1,931 @@
+#!/bin/csh -f
+
+set revision = "2.01"
+set revdate = "2013.04.14"
+# renfile - File renaming, numbering script with
+# copy, move, link, touch features for easy
+# manipulation and creation of numeric sequences
+# Created by Victor E. Vaile, IV on 2000.06.04
+# 1.00 20000604	Initial Version
+#		Prefix, Extension, Increment
+# 1.40 20000606	Added Help output, tp, te, stc,
+#		so, sp, se, ked, sdot, pad, num,
+#		nonum, sbase, dbase options
+# 1.41 20000619	Added undashed help options,
+#		skp, ske, pv, nopad, debug, and
+#		encased help block in more cmd
+# 1.50 20000706	Added action (mv, cp[p], touch),
+#		with default to mv
+# 1.60 20010123	Added sen (distinct from se),
+#		coe/CONTINUE options
+# 1.70 20010123	Added force option, updated help
+#		(sp se[n] mutually exclusive)
+#		Added revision date in help
+# 1.75 20010227	Added atlfix (arg list too long)
+# 1.80 20010302	Added FILELS and VARS variables
+#		to optomize list acquisition
+# 1.81 20010627	Changed dir for TMP_FILE -atlfix
+# 1.82 20010703	Updat help text, general license
+# 1.90 20020727	Added type option to handle 
+#		explicit files/links/directories
+# 1.91 20030402	Changed help output to 'more -e'
+# 1.92 20031103	Added ln action, linux test for
+#		more output, command line tests
+#		use 'grep -c' (removed awk)
+# 1.95 20040303	Added sre, skre options (regex
+#		grep for ls), RVARS variable
+# 1.95b20041029	Added rm, rm -f actions
+# 1.96 20061115	Changed pv to use [2-8] as valid
+#		Optimized pnum handling
+# 1.97 20061201	Added tsp, tse options
+# 1.98 20061204	Added quoting to file tests
+# 1.99 20070119	Added ppad ppadd options, added
+#		newfilename var to clean up 
+#		individual part structures in
+#		action processing routine
+#		cleaned up command line parsing
+# 2.00 20070119	Added ripstring, newstring opts
+# 2.01 20130414	Added version header, revision
+#		and rdate variables, version and
+#		license options moved to official
+#		BSD style license updated help
+
+if($#argv < 1) then
+	echo "Usage: renfile [options]"
+	echo "       renames all selected files with optional paramaters"
+	echo "       Use -h or -help for more explanation"
+	exit 1
+endif
+
+set pre = ""
+set ext = ""
+set inc = 1
+set altstart = 0
+set pad = 0
+set pv = 4
+set takpre = ""
+set takext = ""
+set take = 0
+set number = 0
+set sbase = 1
+set base_file = ""
+set sorder = name
+#set sorder = rdate
+set sc = ""
+set skc = ""
+set ked = 0
+set dot = 0
+set debug = 0
+set action = mv
+set type = "f"
+set ltype = "regular file"
+set conerr = 0
+set force = 0
+set prepad = 0
+set TMP_FILE = /tmp/.atl_fix
+set ripstring = ""
+set newstring = ""
+umask 0
+set ATL_FIX = 0
+alias gmore '(test `uname` = 'Linux' && more || more -e)'
+alias gmore less
+
+while($#argv >= 1)
+        set opt = ${1}
+        switch ( ${opt} )
+		case [Hh]:
+		case [Hh][Ee][Ll][Pp]:
+		case -[Hh]:
+		case -[Hh][Ee][Ll][Pp]:
+			goto HELP
+			breaksw
+		case -[Vv][Ee][Rr]:
+		case -[Vv][Ee][Rr][Ss][Ii][Oo][Nn]:
+			goto VERSION
+			breaksw
+		case -[Ll][Ii][Cc]:
+		case -[Ll][Ii][Cc][Ee][Nn][Ss][Ee]:
+			goto LICENSE
+			breaksw
+		case -[Aa]:
+		case -[Aa][Cc][Tt][Ii][Oo][Nn]:
+			if (${2} == "mv" )then
+				set action = mv
+			else if (${2} == "cpp" )then
+				set action = "cp -p"
+			else if (${2} == "cp" )then
+				set action = cp
+			else if (${2} == "touch" )then
+				set action = touch
+			else if (${2} == "ln" )then
+				set action = "ln -s"
+			else if (${2} == "DELETE" )then
+				set action = "rm"
+				set ext = "DELETED"
+				set sbase = 0
+				set destruct = yes
+			else if (${2} == "FORCEDELETE" )then
+				set action = "rm -f"
+				set ext = "DELETED"
+				set sbase = 0
+				set destruct = yes
+			else
+				echo "${2} is an invalid action."
+				exit 3
+			endif
+			shift
+			shift
+			breaksw
+		case -[Tt]:
+		case -[Tt][Yy][Pp][Ee]:
+			if (${2} == "f" )then
+				set type = ${2}
+				set ltype = "regular file"
+			else if (${2} == "pf" )then
+				set type = ${2}
+				set ltype = "plain file"
+			else if (${2} == "d" )then
+				set type = ${2}
+				set ltype = "directory"
+			else if (${2} == "l" )then
+				set type = ${2}
+				set ltype = "symlink"
+			else
+				echo "${2} is an invalid type."
+				exit 3
+			endif
+			shift
+			shift
+			breaksw
+                case -[Pp]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "What was that prefix -?"
+				exit 3
+			else if (${2} == "" )then
+				echo "What was that prefix?"
+				exit 3
+			endif
+                        set pre = ${2}
+		        shift
+		        shift
+                        breaksw
+                case -[Tt][Pp]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "Take what prefix -?"
+				exit 3
+			else if (${2} == "" )then
+				echo "Take what prefix?"
+				exit 3
+			endif
+                        set takpre = ${2}
+			set take = 1
+		        shift
+		        shift
+                        breaksw
+                case -[Ee]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "Say that .extension again?"
+				exit 3
+			else if (${2} == "" )then
+				echo "You want to run that .extension by me again?"
+				exit 3
+			endif
+                        set ext = .${2}
+		        shift
+		        shift
+                        breaksw
+                case -[Ee][Nn]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "Say that extension again?"
+				exit 3
+			else if (${2} == "" )then
+				echo "You want to run that extension by me again?"
+				exit 3
+			endif
+                        set ext = ${2}
+		        shift
+		        shift
+                        breaksw
+                case -[Tt][Ee]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "Take what extension again?"
+				exit 3
+			else if (${2} == "" )then
+				echo "You want to run that extension by me again?"
+				exit 3
+			endif
+                        set takext = ${2}
+			set take = 1
+		        shift
+		        shift
+                        breaksw
+                case -[Ii]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "increment of minus... what?"
+				exit 3
+			else if (${2} == "" )then
+				echo "What increment?"
+				exit 3
+			endif
+			if (${2} >= 1) then
+	                        set inc = ${2}
+			else
+				echo "Uh-Oh setting Increment to 1"
+			endif
+		        shift
+		        shift
+                        breaksw
+                case -[Ss][Tt][Cc]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "start at minus... what?"
+				exit 3
+			else if (${2} == "" )then
+				echo "Start Where?"
+				exit 3
+			endif
+			if (${2} >= 0) then
+	                        set stc = ${2}
+				set altstart = 1
+			else
+				echo "Uh-Oh setting start to standard"
+			endif
+		        shift
+		        shift
+                        breaksw
+		case -[Ss][Oo]:
+			if (${2} == "date") then
+				set sorder = date
+			else if (${2} == "name") then
+				set sorder = name
+			else if (${2} == "rdate") then
+				set sorder = rdate
+			else if (${2} == "rname") then
+				set sorder = rname
+			else
+				echo "What sort order?"
+				exit 3
+			endif
+		        shift
+		        shift
+                        breaksw
+		case -[Ss][Pp]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "Sort by what prefix again?"
+				exit 3
+			else if (${2} == "" )then
+				echo "You want to run that sort Prefix by me again?"
+				exit 3
+			endif
+			set sc = "^${2}"
+			shift
+			shift
+			breaksw
+		case -[Ss][Ee]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "Sort by what extension again?"
+				exit 3
+			else if (${2} == "" )then
+				echo "You want to run that sort extension by me again?"
+				exit 3
+			endif
+			set sc = '\\.'${2}'$'
+			shift
+			shift
+			breaksw
+		case -[Tt][Ss][Pp]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "Sort by and Take what prefix again?"
+				exit 3
+			else if (${2} == "" )then
+				echo "You want to run that sort and take Prefix by me again?"
+				exit 3
+			endif
+                        set takpre = ${2}
+			set take = 1
+			set sc = "^${2}"
+			shift
+			shift
+			breaksw
+		case -[Tt][Ss][Ee]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "Take and Sort by what extension again?"
+				exit 3
+			else if (${2} == "" )then
+				echo "You want to run that take and sort extension by me again?"
+				exit 3
+			endif
+                        set takext = ${2}
+			set take = 1
+			set sc = '\\.'${2}'$'
+			shift
+			shift
+			breaksw
+		case -[Rr][Ii][Pp][Ss][Tt][Rr][Ii][Nn][Gg]:
+			if (`echo ${2} | grep -c /` >= 1) then
+				echo "Sorry we can't remove the character '/' with this script."
+				exit 3
+			else if ("${2}" == "" )then
+				echo "You want to run that rip string by me again?"
+				exit 3
+			endif
+			echo ""
+			echo "Using ripstring.  Be careful, as we're"
+			echo "not checking the string '${2}' for errors."
+			echo ""
+			set ripstring = "${2}"
+			set take = 1
+			shift
+			shift
+			breaksw
+		case -[Nn][Ee][Ww][Ss][Tt][Rr][Ii][Nn][Gg]:
+			if ("${2}" == "" )then
+				echo "You want to run that new string by me again?"
+				exit 3
+			endif
+			set newstring = "${2}"
+			shift
+			shift
+			breaksw
+		case -[Ss][Ee][Nn]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "Sort by what non-dotted extension again?"
+				exit 3
+			else if (${2} == "" )then
+				echo "You want to run that non-dot sort extension by me again?"
+				exit 3
+			endif
+			set sc = ${2}'$'
+			shift
+			shift
+			breaksw
+		case -[Ss][Rr][Ee]:
+			echo ""
+			echo "WARNING: Not checking syntax of possible regular expression '$2'"
+			echo ""
+			echo "If there is an error, please interrupt (Ctrl-c) within 4 seconds."
+			sleep 4
+			echo "Continuing..."
+			echo ""
+			set rsc = "${2}"
+			shift
+			shift
+			breaksw
+		case -[Ss][Kk][Pp]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "Skip by what prefix again?"
+				exit 3
+			else if (${2} == "" )then
+				echo "You want to run that skip Prefix by me again?"
+				exit 3
+			endif
+			set skc = "^${2}"
+			shift
+			shift
+			breaksw
+		case -[Ss][Kk][Ee]:
+			if (`echo ${2} | grep -c ^-` == 1) then
+				echo "Skip by what extension again?"
+				exit 3
+			else if (${2} == "" )then
+				echo "You want to run that skip extension by me again?"
+				exit 3
+			endif
+			set skc = ${2}'$'
+			shift
+			shift
+			breaksw
+		case -[Ss][Kk][Rr][Ee]:
+			echo ""
+			echo "WARNING: Not checking syntax of possible regular expression '$2'"
+			echo ""
+			echo "If there is an error, please interrupt (Ctrl-c) within 4 seconds."
+			sleep 4
+			echo "Continuing..."
+			echo ""
+			set rsc = "${2}"
+			set skrsc = ""
+			shift
+			shift
+			breaksw
+                case -[Kk][Ee][Dd]:
+                        set ked = 1
+		        shift
+                        breaksw
+                case -[Ss][Dd][Oo][Tt]:
+                        set dot = 1
+		        shift
+                        breaksw
+                case -[Pp][Aa][Dd]:
+                        set pad = 1
+			set number = 1
+		        shift
+                        breaksw
+                case -[Pp][Pp][Aa][Dd]:
+                        set pad = 1
+                        set prepad = 1
+			set number = 1
+		        shift
+                        breaksw
+                case -[Pp][Aa][Dd][Dd]:
+                        set pad = 2
+			set number = 1
+		        shift
+                        breaksw
+                case -[Pp][Pp][Aa][Dd][Dd]:
+                        set pad = 3
+                        set prepad = 1
+			set number = 1
+		        shift
+                        breaksw
+                case -[Pp][Vv]:
+			if ("${2}" =~ [2-8]) then
+				set pv = ${2}
+			else
+				echo "${2} is not a valid value for padding"
+				exit 3
+			endif
+		        shift
+		        shift
+                        breaksw
+                case -[Nn][Oo][Pp][Aa][Dd]:
+                        set pad = 0
+		        shift
+                        breaksw
+                case -[Nn][Uu][Mm]:
+                        set number = 1
+		        shift
+                        breaksw
+                case -[Pp][Nn][Uu][Mm]:
+                        set prepad = 1
+                        set number = 1
+		        shift
+                        breaksw
+                case -[Nn][Oo][Nn][Uu][Mm]:
+                        set number = 0
+		        shift
+                        breaksw
+                case -[Ss][Bb][Aa][Ss][Ee]:
+                        set sbase = 1
+		        shift
+                        breaksw
+                case -[Dd][Bb][Aa][Ss][Ee]:
+                        set sbase = 0
+		        shift
+                        breaksw
+                case -[Dd]:
+                case -[Dd][Ee][Bb][Uu][Gg]:
+                        set debug = 1
+		        shift
+                        breaksw
+                case -CONTINUE:
+                case -[Cc][Oo][Ee]:
+                        set conerr = 1
+                        set force = 0
+                        shift
+                        breaksw
+                case -[Ff][Oo][Rr][Cc][Ee]:
+                        set force = 1
+                        set conerr = 1
+                        shift
+                        breaksw
+                case -[Aa][Tt][Ll][Ff][Ii][Xx]:
+                        set ATL_FIX = 1
+                        shift
+                        breaksw
+                default:
+                        echo "$opt is an invalid option.  Use renfile -h for help."
+                        exit 2
+        endsw
+end
+
+if (${altstart} == "0") then
+	set T = ${inc}
+else if (${altstart} == "1") then
+	set T = ${stc}
+endif
+
+if ( "${type}" == "d" ) then
+	if ( "${action}" =~ cp* ) then
+		set action = "${action} -r"
+	else if ( "${action}" =~ rm* ) then
+		set action = "${action} -r"
+	endif
+endif
+
+if (${dot} == "1") then
+	if (${sorder} == "date") then
+		set FILELS = "/bin/ls -A1t"
+	else if (${sorder} == "name") then
+		set FILELS = "/bin/ls -A1"
+	else if (${sorder} == "rdate") then
+		set FILELS = "/bin/ls -A1rt"
+	else if (${sorder} == "rname") then
+		set FILELS = "/bin/ls -A1r"
+	endif
+else if (${dot} == "0") then
+	if (${sorder} == "date") then
+		set FILELS = "/bin/ls -1t"
+	else if (${sorder} == "name") then
+		set FILELS = "/bin/ls -1"
+	else if (${sorder} == "rdate") then
+		set FILELS = "/bin/ls -1rt"
+	else if (${sorder} == "rname") then
+		set FILELS = "/bin/ls -1r"
+	endif
+endif
+if ( ${?rsc} ) then
+	if (${?skrsc}) then
+		set RVARS = '| grep --regex='"${rsc}"' -v'
+	else
+		set RVARS = '| grep --regex='"${rsc}"
+	endif
+else
+	set RVARS = ""
+endif
+if (`echo ${sc}` == "") then
+	if (`echo ${skc}` == "") then
+			set VARS = ""
+	else
+			set VARS = "| grep -v ${skc}"
+	endif
+else
+	if (`echo ${skc}` == "") then
+			set VARS = "| grep ${sc}"
+	else
+			set VARS = "| grep ${sc} | grep -v ${skc}"
+	endif
+endif
+
+#echo "${FILELS} ${RVARS} ${VARS}"
+set FILES = `echo "${FILELS} ${RVARS} ${VARS}"`
+
+if ("${ATL_FIX}" == "1" ) then
+
+	set numberfiles = "`$FILES | wc -l | sed 's, ,,g'`"
+	set runs = `echo ${numberfiles} | awk '{printf "%1d\n", ($1/250)}'`
+	set remainder = `echo ${numberfiles} ${runs} | awk '{print $1 - ($2*250)}'`
+	set start = 0
+	@ runs++
+	if (-f ${TMP_FILE} ) then
+		echo "Error old tmp file in ${TMP_FILE}"
+		rm -f ${TMP_FILE}
+		if (-f ${TMP_FILE} ) then
+			echo "Couldn't remove ${TMP_FILE} ...Exiting."
+			exit 3
+		endif
+	endif
+
+#	How do I do this properly?:
+#	set test = `echo "$FILES > ${TMP_FILE}"`
+#	echo $test
+#	$test
+
+	set test = "`$FILES > ${TMP_FILE}`"
+	echo $test
+
+	while ( "${runs}" > "0" )
+		@ runs--
+		@ start++
+		echo ""
+		echo "Start number is :${start}"
+		echo ""
+		set head = `echo ${start} | awk '{print $1*250}'`
+		if ("${runs}" == "0" ) then
+			set tail = ${remainder}
+			echo "tail is : ${tail}"
+		else
+			set tail = 250
+		endif
+
+	set FILEZ = "head -${head} ${TMP_FILE} | tail -${tail}"
+
+else
+
+	#foreach fil ("`$FILES`")
+	set FILEZ = "${FILES}"
+endif
+
+foreach fil ("`$FILEZ`")
+
+	if ("${type}" == "f") then
+		if ( -f "$fil" ) then
+			set goforit = "yes"
+		else
+			set goforit = "no"
+		endif
+	else if ("${type}" == "pf") then
+		if ( -f "$fil" && ! -l "$fil" ) then
+			set goforit = "yes"
+		else
+			set goforit = "no"
+		endif
+	else if ("${type}" == "d") then
+		if ( -d "$fil" ) then
+			set goforit = "yes"
+		else
+			set goforit = "no"
+		endif
+	else if ("${type}" == "l") then
+		if ( -l "$fil" ) then
+			set goforit = "yes"
+		else
+			set goforit = "no"
+		endif
+	endif
+
+	if ( "${goforit}" == "yes" ) then
+		if (${number} == "0") then
+			if (${sbase} == "0") then
+				if (${?destruct}) then
+					set pnum = ""
+				else
+					echo "Cannot rename files without numbers unless"
+					echo "part of name body remains... Exiting."
+					exit 4
+				endif
+			else if (${sbase} == "1") then
+				set pnum = ""
+			endif
+		else if (${number} == "1") then
+			if (${pad} == "3") then
+				set pnum = `printf "%${pv}.${pv}d." "${T}"`
+			else if (${pad} == "2") then
+				set pnum = `printf "%${pv}.${pv}d" "${T}"`
+			else if (${pad} == "1") then
+				set pnum = `printf "%${pv}.${pv}d" "${T}"`
+			else if (${pad} == "0") then
+				set pnum = ${T}
+			endif
+		endif
+		if (${sbase} == "1") then
+			if (${take} == "1") then
+				set prevar = 's/^'${takpre}'//g'
+				if (${ked} == "1") then
+					set extvar = 's/'${takext}'$//g'
+				else if (${ked} == "0") then
+					set extvar = 's/\.'${takext}'$//g'
+				endif
+				set ripvar = 's/'"${ripstring}"'/'"${newstring}"'/g'
+				if ("${ripstring}" != "") then
+					set base_file = `echo "$fil" | sed ${prevar} | sed ${extvar} | sed "${ripvar}"`
+				else
+					set base_file = `echo $fil | sed ${prevar} | sed ${extvar}`
+				endif
+				if (${number} == "0") then
+					if ("${base_file}" == "") then
+						echo "Nothing left of base file name,"
+						echo "and no numbers to differentiate... Exiting."
+						exit 4
+					endif
+				endif
+			else if (${take} == "0") then
+				set base_file = "${fil}"
+			endif
+		else if (${sbase} == "0") then
+			set base_file = ""
+		endif
+		if ("${prepad}" == "0") then
+			set newfilename = "${pre}${base_file}${pnum}${ext}"
+		else # ("${prepad}" == "1") then
+			set newfilename = "${pnum}${pre}${base_file}${ext}"
+		endif
+		if ( -e "${newfilename}") then
+			if ( "${fil}" == "${newfilename}") then
+				echo "${fil}" and "${newfilename}" are identical... Nothing done.
+			else
+				if ("${conerr}" == "0") then
+				echo "File "${newfilename}" exists... exiting"
+				exit
+				else if ("${conerr}" == "1") then
+					if ("${force}" == "0") then
+						echo "File "${newfilename}" exists... skipping"
+					else if ("${force}" == "1") then
+						echo -n "$fil "
+						if (${debug} == "0" ) then
+							if ("${action}" == "mv") then
+								${action} "${fil}" "${newfilename}"
+							else if ("${action}" == "cp") then
+								${action} "${fil}" "${newfilename}"
+							else if ("${action}" == "cp -p") then
+								${action} "${fil}" "${newfilename}"
+							else if ("${action}" == "touch") then
+								${action} "${newfilename}"
+							else if ("${action}" == "ln -s") then
+								${action} "${cwd}/${fil}" "${newfilename}"
+							else if ("${action}" =~ rm*) then
+								${action} "${fil}"
+							endif
+						else if (${debug} == "1" ) then
+							echo -n " (test)"
+						endif
+						echo "-\!> " "${newfilename}"
+					endif
+				endif
+			endif
+		else
+			echo -n "$fil "
+			if (${debug} == "0" ) then
+				if ("${action}" == "mv") then
+					${action} "${fil}" "${newfilename}"
+				else if ("${action}" == "cp") then
+					${action} "${fil}" "${newfilename}"
+				else if ("${action}" == "cp -p") then
+					${action} "${fil}" "${newfilename}"
+				else if ("${action}" == "touch") then
+					${action} "${newfilename}"
+				else if ("${action}" == "ln -s") then
+					${action} "${cwd}/${fil}" "${newfilename}"
+				else if ("${action}" =~ rm*) then
+					${action} "${fil}"
+				endif
+			else if (${debug} == "1" ) then
+				echo -n " (test)"
+			endif
+			echo "-> " "${newfilename}"
+		endif
+		@ T += ${inc}
+	else
+		echo " "$fil" is not a "$ltype"... Skipping."
+	endif
+end
+if ("${ATL_FIX}" == "1" ) then
+	#
+	end
+	#
+endif
+if ("${ATL_FIX}" == "1" ) then
+	rm -f ${TMP_FILE}
+endif
+exit 0
+
+VERSION:
+	printf "\nrenfile - file renaming/copying/creating utility (v.${revision} VEV,IV )\n\n";\
+exit 0
+
+HELP:
+(	echo "";\
+	echo "renfile - file renaming/copying/creating utility (v.${revision} VEV,IV )";\
+	echo "";\
+	echo "usage: renfile [options]  (May require some caution. Please Be Careful\!)";\
+	echo "";\
+	echo "options: -h,-help	Display this help Dialogue.";\
+	echo "";\
+	echo "	 -a action	Action to take. Default is 'mv'.  Now, you can also use";\
+	echo "			'cp', 'cpp' (for cp -p), 'touch' (creates a new empty ";\
+	echo "			file), and ln (creates a symlink to source file).";\
+	echo "";\
+	echo "	 -t type	Type of file to modify.  Default is 'f' (regular file).";\
+	echo "			Can also be 'pf' (plain file excluding symlinks),";\
+	echo "			'd' (directory) or 'l' (symlink)";\
+	echo "";\
+	echo "	 -p prefix	Add 'prefix' to all selected files.";\
+	echo "";\
+	echo "	 -e extension	Add 'extension' to all selected files.  Use of -e will ";\
+	echo "			append a '.' (dot) before the extension specified.";\
+	echo "";\
+	echo "	 -en extension	Add 'extension' to selected files without adding a '.'";\
+	echo "";\
+	echo "	 -tp takpre	Remove 'takpre' from beginning of filename.";\
+	echo "";\
+	echo "	 -te takext	Remove 'takext' from end of filename.  -te removes the";\
+	echo "			leading '.' (dot) with the extension being removed.";\
+	echo "	 ##\!		# Be careful when using a '.' (dot) as part of an";\
+	echo "			argument for -tp or -te.  It will be evaluated to mean";\
+	echo "			'ANY' character\!\!  To Be Safe:  Try escaping them";\
+	echo "			with two backslashes. eg: -tp \\\\.";\
+	echo "";\
+	echo "	 -ked		Keeps leading '.' from being removed when using -te.";\
+	echo "";\
+	echo "	 -i n		When adding numbers, use 'n' as increment.";\
+	echo "";\
+	echo "	 -stc n		When adding numbers, start with 'n'.";\
+	echo "";\
+	echo "	 -so opt	Sort files by 'opt'.  Allowable variables are:";\
+	echo "			  date:			rdate:  date reversed.";\
+	echo "			  name: (default)	rname:  name reversed.";\
+	echo "";\
+	echo "	 -sp srtpre	Returns only files starting with 'srtpre'.";\
+	echo "";\
+	echo "	 -se srtext	Returns only files ending with '.srtext'.  Searches";\
+	echo "			for a '.' (dot) before srtext.";\
+	echo "";\
+	echo "	 -tsp pre	Combines use of -tp and -sp for 'pre'.";\
+	echo "";\
+	echo "	 -tse ext	Combines use of -te and -se for '.ext'.";\
+	echo "";\
+	echo "	 -ripstring rmstring";\
+	echo "			Removes every occurance of string 'rmstring' from filename.";\
+	echo "";\
+	echo "	 -newstring nwstring";\
+	echo "			When used with '-ripstring', replaces all occurances";\
+	echo "			of old string 'rmstring' with string 'nwstring'.";\
+	echo "";\
+	echo "	 -sen srtext	Returns only files ending with 'srtext'.  Does not";\
+	echo "			search for prepending "." (dot), although you can";\
+	echo "			specify one by escaping it with 4 backslashes (\\\\\\\\.).";\
+	echo "			eg. '-sen xt' returns files ending with '.xt', 'txt',";\
+	echo "			etc.";\
+	echo "	 ##\!		# (Note: you may only use one of the -sp or -se(n)";\
+	echo "			options at a time.  Using both on the command line will";\
+	echo "			cause the last one specified to be used.)";\
+	echo "";\
+	echo "	 -sre srtregex	Returns only files matching the regular expression";\
+	echo "			'srtregex'.  In order to use brackets '[]' with this";\
+	echo "			expression, you will need to escape the left bracket with";\
+	echo "			3 backslashes (\\\\\\).  Note that this is different than";\
+	echo "			other sorting due to the way the regular expression needs";\
+	echo "			to be handled, and is limited to the regular expression ";\
+	echo "			capability of the grep command. Also note that 'srtregex'";\
+	echo "			can not be tested for validity, so please be careful and ";\
+	echo "			use the debug '-d' option to be sure you're doing what";\
+	echo "			you want beforehand.";\
+	echo "";\
+	echo "	 -skp skippre	Skips files starting with 'skippre'.";\
+	echo "";\
+	echo "	 -ske skipext	Skips files ending with 'skipext'.";\
+	echo "	 ##\!		# (Note: only one of the -skp or -ske options may be";\
+	echo "			used at a time.  Using both options will cause only";\
+	echo "			the last one specified to be used.)";\
+	echo "";\
+	echo "	 -skre skregex	Skips files matching the regular expression 'skregex'.";\
+	echo "			The syntax is the same as -sre.";\
+	echo "	 ##\!		# (Note: only one of the -sre or -skre options may be";\
+	echo "			used at a time, as they are mutually exclusive.)";\
+	echo "";\
+	echo "	 -sdot		Allow dot files to be returned in the search.";\
+	echo "";\
+	echo "	 -num		Append numbers to the filename (before the extension).";\
+	echo "";\
+	echo "	 -pnum		Prepend numbers to the filename (before the prefix).";\
+	echo "";\
+	echo "	 -nonum		Cancels appending/prepending numbers.";\
+	echo "";\
+	echo "	 -pad		When using numbers -pad will cause numbers to be padded";\
+	echo "			four digits. eg: 0001, 0002, etc.  Use of -pad implies";\
+	echo "			-num, so you don't need to specify both options.";\
+	echo "";\
+	echo "	 -padd		(Pad Dot) Like -pad, but prepends a '.' (dot).";\
+	echo "";\
+	echo "	 -ppad		(PrePad) Like -pad, but implies -pnum.";\
+	echo "";\
+	echo "	 -ppadd		(PrePad Dot) Like -ppad, but adds a '.' (dot) between";\
+	echo "			the padded digits and the remainder of the filename";\
+	echo "";\
+	echo "	 -pv		Pad value. Default is 4.  Valid numbers are 2-8." ;\
+	echo "";\
+	echo "	 -nopad		Cancels number padding. It doesn't however cancel -num.";\
+	echo "";\
+	echo "	 -coe		Continue On Error.  When a file with new name already";\
+	echo "			exists, renfile skips it and goes on instead of exiting";\
+	echo "";\
+	echo "	 -force		Attempt to execute task even if file already exists.";\
+	echo "			# (Note: -coe and -force are mutually exclusive.  Using";\
+	echo "			one will effectively turn off the other.";\
+	echo "	 ##\!		##\!\! ONLY USE THIS IF YOU MEAN IT\!\!\!##";\
+	echo "";\
+	echo "	 -dbase		Causes base filename to be omitted.  This option will";\
+	echo "			only work when renaming using -num.";\
+	echo "	 ##\!		##\!\! ONLY USE THIS IF YOU MEAN IT\!\!\!##";\
+	echo "";\
+	echo "	 -sbase		Cancels ommission of base filename.";\
+	echo "	";\
+	echo "	 -atlfix	Work around for 'Arguments too long' error";\
+	echo "			by splitting list into 250-file blocks.";\
+	echo "			Uses tmp file in /tmp/.atl_fix.";\
+	echo "	";\
+	echo "	 -d,-debug	Debug option.  Prints output without moving files.";\
+	echo "	";\
+	echo "	 -version	Display Software Version and exit";\
+	echo "	";\
+	echo "	 -license	Display Software License and exit";\
+	echo "	";\
+	echo "			Created 2000.06.04";\
+	echo "			Last Revised ${revdate}";\
+	echo "	";\
+) | gmore
+exit 0
+
+LICENSE:
+	printf "Copyright © 2008-2013 Victor E. Vaile, IV. All Rights Reserved.\n\n";
+	printf "Redistribution and use in source and binary forms, with or without modification,\n";
+	printf "are permitted provided that the following conditions are met:\n\n";
+	printf "1. Redistributions of source code must retain the above copyright notice, this\n";
+	printf "   list of conditions and the following disclaimer.\n\n";
+	printf "2. Redistributions in binary form must reproduce the above copyright notice,\n";
+	printf "   this list of conditions and the following disclaimer in the documentation\n";
+	printf "   and/or other materials provided with the distribution.\n\n";
+	printf "3. The name of the author may not be used to endorse or promote products derived\n";
+	printf "   from this software without specific prior written permission.\n\n";
+	printf 'THIS SOFTWARE IS PROVIDED BY THE AUTHOR \"AS IS\" AND ANY EXPRESS OR IMPLIED\n';
+	printf "WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF\n";
+	printf "MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT\n";
+	printf "SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,\n";
+	printf "EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT\n";
+	printf "OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS\n";
+	printf "INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN\n";
+	printf "CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING\n";
+	printf "IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY\n";
+	printf "OF SUCH DAMAGE.\n\n";
+	printf "* That being said, if you find a bug, feel free to report it to the author. :)\n\n";
+exit 0;
+

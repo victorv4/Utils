@@ -1,0 +1,107 @@
+#!/bin/csh -f
+
+##     Copyright © 2000-2017 Victor E. Vaile, IV. All Rights Reserved.
+## 
+##     Redistribution and use in source and binary forms, with or without
+##     modification, are permitted provided that the following conditions are met:
+## 
+##     1. Redistributions of source code must retain the above copyright notice,
+##     this list of conditions and the following disclaimer.
+## 
+##     2. Redistributions in binary form must reproduce the above copyright
+##     notice, this list of conditions and the following disclaimer in the
+##     documentation and/or other materials provided with the distribution.
+## 
+##     3. The name of the author may not be used to endorse or promote products
+##     derived from this software without specific prior written permission.
+## 
+##     THIS SOFTWARE IS PROVIDED BY THE AUTHOR "AS IS" AND ANY EXPRESS OR IMPLIED
+##     WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+##     MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+##     EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+##     SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+##     TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+##     PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+##     LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+##     NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+##     SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+set irpt = 0		;: # Instance number reporting
+set okystat = 0		;: # Success Count
+set endstat = 0		;: # Loop continue / break variable
+set instance = 1	;: # Command Count
+set count = 0		;: # Count of errors per instance
+set maxcnt = 0		;: # Maximum number of errors allowed per instance
+set errcnt = 0		;: # Error Count 
+set cmd = ""		;: # Command string variable
+set cont = 1		;: # Parsing loop Continue / break variable
+set noclobber		;: # Overwriting files will be an error
+alias eval ""		;: # Eval will work for redirects, but errors will exit immediately
+alias dosleep ":"	;: # In case we're tired
+
+while (${#argv} > 0  && $cont == 1)
+	if ( "${1}" =~ {"-h","--help"}) then
+		echo ""
+		echo "${0}: Repeat a given command until the exit status is non-zero."
+		echo "Usage: $0 [scriptopts] command [arg1 arg2...]"
+		echo "	--maxcount val	Allows up to 'val' errors per instance without exiting."
+		echo "	--sleep 	Pause for 1 second after an error when a valid maxcount value is set."
+		echo "	--verbose 	Prints a running instance number."
+		echo ""
+		exit
+	else if ( "${1}" =~ {"-v","--verbose"}) then
+		shift
+		set irpt = 1
+	else if ( "${1}" =~ "--maxcount") then
+		shift
+		if ("${1}" =~ {[0-9],[0-9][0-9]} ) then
+			set maxcnt = ${1}
+			shift
+		else
+			echo "Invalid value for maxcount: '${1}'.  Exiting"
+			exit 1
+		endif
+	else if ( "${1}" =~ "--sleep") then
+		shift
+		alias dosleep sleep
+	else	# We only parse the command line opts for this script...
+		set cmd = "$*"
+		set cont = 0
+	endif
+end
+
+if ("${cmd}" =~ "") then
+	echo "No command to execute"
+	exit 1
+endif
+
+echo "$cmd" | grep -q '>' && unalias eval
+
+while ($endstat == 0)
+	echo ""
+	if ($irpt == "1") then
+		@ instance = $okystat + 1
+		echo "Instance ${instance}:"
+	endif
+	echo "$cmd":
+	echo ""
+	eval $cmd
+	set endstat = $status
+	if ($endstat != 0) then	# We got an error.
+		@ count += 1
+		@ errcnt += 1
+		if ($count > $maxcnt ) then	# Too many errors. Exit.
+			echo "$okystat successful iterations. $errcnt total errors. Status now $endstat"
+			echo ""
+		else 	# Okay, just try again.
+			set endstat = 0
+			dosleep 1
+		endif
+	else	# Reset the instance error count, increment the success count, and continue.
+		set count = 0
+		@ okystat += 1
+	endif
+end
+
+exit
+

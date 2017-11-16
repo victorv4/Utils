@@ -1,0 +1,531 @@
+#!/bin/sh -f
+
+version=2.63
+# Multi-host remote shell execution utility
+# Maintained by Victor E. Vaile, IV
+# Connects to all hosts in provided list from file, or STDIN, and executes
+# command[s] on remote hosts, returning the output with host name tag.
+# Default behavior does ping to verify host alive before connection.
+# remote user can be specified, executable command data on STDIN can be
+# echoed to each host independently if specified.
+# Inspired by rup based rsh_all script (JY 12/95)
+# 1.x  200004..	Initial versions added core features processing various host lists
+# 2.0  20121231	Re-write of entire script with more sane, modern defaults
+#		Adapted some aspects of changes from 04/2000, 10/2002, 03/2007 in
+#		previous script, including reading host or command data on STDIN,
+#		checking hosts on network before attempting connection, background
+#		per host remote shell tasks, even left in legacy functionality for
+#		rup and skip list (however won't likely be used [ever]).
+# 2.1		Exit status of script is count of hosts not contacted or returning
+#		errors.  Option to suppress errors, else print errors with stdout
+# 2.2		Options to specify host list command, and data file as source for
+#		piped data to hosts
+# 2.3  20130122	Added -trust flag to skip host key checking.  Turned off node hint
+#		for 'long' commands when run in background mode
+#		Added debug mode
+#		Strip out '\r' and '\n' when displaying command in multi-line mode
+# 2.4  20130124	Changed boolean args to 0/1, Negation flags for bg, trust, batch
+# 2.4  20130314	Added more delimiting between multi lined outputs
+#		Added delay option for launching background commands with 
+#		optional user specified delay value (in seconds)
+# 2.5  20130330	Added delay value option to avoid appearing like a ddos
+# 2.6  20130412	Updated help/license output
+# 2.61 20130419	Versioning scale change (additional digit)
+#		Changed delay to apply to both foreground and background tasks
+# 2.62 20131115	Updated ping args for Darwin
+# 2.63 20150520	Neatened help output. Undoc'd nopass mode 
+
+background=0
+stop=0
+srv_list=none
+rsh=ssh
+myuname=`uname`
+parg=''
+interactive=0
+xforward=""
+sopts="-o ConnectTimeout=10"
+trust=0
+batch=0
+nopass=0
+useid=0
+getrup=0
+awkcmd='{rb[NR]=$0}END{if(NR<=1){printf "%-"l"s%s\n", host":", rb[NR]}else{gsub(/\r/,"\\r",cmd);gsub(/\n/,"\\n",cmd);printf "%s", "###\n### "rall" "host" "cmd"\n###\n";for(i=1;i<=NR;i++){print rb[i]}}}'
+bname=`printf %s "$0" | sed -e "s/\/$//" -e "s/.*\///"`
+ex=0
+se=0
+dowait=1
+pnl=''
+debug=0
+doping=1
+ident=""
+delay=0
+sdelay=1
+didone=0
+
+warnfail() { # Define this now for the command line parsing
+	echo $1
+	exit
+}
+
+showlic() { # Display license
+	printf "Copyright © 2000-2013 Victor E. Vaile, IV. All Rights Reserved.\n\n";
+	printf "Redistribution and use in source and binary forms, with or without modification,\n";
+	printf "are permitted provided that the following conditions are met:\n\n";
+	printf "1. Redistributions of source code must retain the above copyright notice, this\n";
+	printf "   list of conditions and the following disclaimer.\n\n";
+	printf "2. Redistributions in binary form must reproduce the above copyright notice,\n";
+	printf "   this list of conditions and the following disclaimer in the documentation\n";
+	printf "   and/or other materials provided with the distribution.\n\n";
+	printf "3. The name of the author may not be used to endorse or promote products derived\n";
+	printf "   from this software without specific prior written permission.\n\n";
+	printf "THIS SOFTWARE IS PROVIDED BY THE AUTHOR \"AS IS\" AND ANY EXPRESS OR IMPLIED\n";
+	printf "WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF\n";
+	printf "MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT\n";
+	printf "SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,\n";
+	printf "EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT\n";
+	printf "OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS\n";
+	printf "INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN\n";
+	printf "CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING\n";
+	printf "IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY\n";
+	printf "OF SUCH DAMAGE.\n\n";
+	printf "* That being said, if you find a bug, feel free to report it to the author. :)\n\n";
+	exit 0;
+}
+
+if [ \( $# -lt 1 \) -o \( "$1" = "-help" \) -o \( "$1" = "-h" \) ]
+then
+	echo "$bname ($version) - executes command on network hosts (supplied by list) in sequence"
+	echo "usage: $bname [ options ] <command>"
+	echo ""
+	echo "options:"
+	echo ""
+	echo "  -f [\$file | - ]     gets list of hosts from named \$file or stdin"
+	echo ""
+	echo "  -m \"host list\"      gets list of hosts from command line"
+	echo "                      (within double quotes)"
+	echo ""
+	echo "  -c \"command\"        gets list of hosts from specified command"
+	echo ""
+	echo "  -rup                use rup to get host list"
+	echo "                      You can use an optional file in your \$HOME/bin directory"
+	echo "                      called .rshskip to explicitly skip certain servers when using rup"
+	echo "                      using the line syntax: ^server\$"
+	echo ""
+	echo "  -s                  use ssh instead of rsh (default)"
+	echo ""
+	echo "  -rsh                use rsh instead of ssh"
+	echo ""
+	echo "  -su \"userid\"        uses userid@host for each host"
+	echo ""
+	echo "  -X|Y                forward auth|fake-auth X from each host"
+	echo ""
+	echo "  -data               echo data piped from STDIN to each host"
+	echo "                      (can be used for impromptu scripts run on each host. [e.g.: if command is then 'cat |sh'])"
+	echo ""
+	echo "  -datafil \$file      echo data from file \$file to each host"
+	echo "                      (can be used for impromptu scripts run on each host. [e.g.: if command is then 'cat |sh'])"
+	echo ""
+	echo "  -bg                 runs all per-host ssh/rsh processes in background for faster return"
+	echo "                      (host order cannot be preserved and multi-line output may be garbled.)"
+	echo ""
+	echo "  -noping             ignore pingable state of host (othewise skips un-pingable hosts)"
+	echo ""
+	echo "  -trust              when using ssh, skip strict host key checking for remote host(s)"
+	echo ""
+	echo "  -i                  connect to all hosts and start interactive session"
+	echo ""
+	echo "  -q                  quiet mode - suppresses error messages. (Otherwise print in stdout)"
+	echo ""
+	echo "  -w                  wait - when tasks are executed in background, wait for all to finish"
+	echo "                      this is the default behavior, and is required to collect exit statuses."
+	echo ""
+	echo "  -nw                 nowait - when tasks are executed in background, exit immediately"
+	echo ""
+	echo "  -delay              pause for {sdelay} seconds (default 1) between executions "
+	echo ""
+	echo "  -dv \$val            set value of {sdelay} to \$val (implies -delay)"
+	echo ""
+	echo "  -d                  Debug mode. (echo commands only)"
+	echo ""
+	echo "  examples:"
+	echo "                        $bname -f mylist w"
+	echo "                        ssh's to all machines in file: mylist"
+	echo "                        and returns output from 'w' command"
+	echo ""
+	echo "                      Multiple commands to hosts can be nested within single quotes."
+	echo ""
+	echo "  -help               Display this help text, and exit."
+	echo ""
+	echo "  -license            Display Software License, and exit."
+	echo ""
+	exit 0
+fi
+
+
+if [ "${myuname}" = "FreeBSD"  -o "${myuname}" = "Darwin" ]
+then
+	ping='ping -c 1 -t 2'
+elif [ "${myuname}" = "CYGWIN_NT-5.1" -o "${myuname}" = "CYGWIN_NT-5.2" ]
+then
+	ping='ping'
+	parg='56 1'
+else	# (System V, Linux, POSIX)
+	ping='ping -c 1 -w 1'
+fi
+
+while [ $# -ge 1 ] && [ $stop = 0 ]
+do
+	case $1 in
+		-bg)
+			background=1
+			batch=1
+			shift
+			;;
+		-fg)
+			background=0
+			batch=0
+			shift
+			;;
+		-i)
+			interactive=1
+			shift
+			;;
+		-q)
+			se=1
+			shift
+			;;
+		-w)
+			dowait=1
+			shift
+			;;
+		-nw)
+			dowait=0
+			shift
+			;;
+		-delay)
+			delay=1
+			shift
+			;;
+		-dv)
+			echo $2 | grep -q '^[0-9][0-9]*$' && export sdelay=$2 || warnfail "Invalid delay '$2'"
+			delay=1
+			shift
+			shift
+			;;
+		-noping)
+			doping=0
+			shift
+			;;
+		-nopass)
+			nopass=1
+			shift
+			;;
+		-f)
+			if [ $2 = "-" ]
+			then
+				if [ ${stdinuse:=blank} = "blank" ]
+				then
+					stdinuse=hosts
+					srv_list=`cat`
+					echo "$bname: getting server list (stdin) ..."
+				else
+					echo "Can Not use server list from STDIN.  (Already in use for $stdinuse.)"
+				fi
+				shift
+				shift
+			elif [ -r $2 ]
+			then
+				srv_list=`cat $2`
+				echo "$bname: getting server list file:${2} ..."
+				shift
+				shift
+			else
+				echo "$2 unreadable...  Exiting."
+				shift
+				exit 1
+			fi
+			;;
+		-c)
+			if [ "${2:=blank}" != "blank" ] 
+			then
+				servertry="$2"
+				echo "Using command '$servertry' for server list."
+				shift
+			else
+				echo "Warning: No server command given"
+			fi
+			shift
+			;;
+		-m)
+			srv_list=$2
+			echo "$bname: server list ( $srv_list ) ..."
+			shift
+			shift
+			;;
+		-rup)
+			getrup=1
+			shift
+			;;
+		-rsh)
+			rsh=rsh
+			shift
+			;;
+		-s)
+			rsh=ssh
+			shift
+			;;
+		-su)
+			suid=$2
+			echo "Using userid $suid."
+			shift
+			shift
+			;;
+		-trust)
+			trust=1
+			shift
+			;;
+		-notrust)
+			trust=0
+			shift
+			;;
+		-B|-batch)
+			batch=1
+			shift
+			;;
+		-prompt)
+			batch=0
+			shift
+			;;
+		-X)
+			xforward='-X'
+			shift
+			;;
+		-Y)
+			xforward='-Y'
+			shift
+			;;
+		-data)
+			if [ ${stdinuse:=blank} = "blank" ]
+			then
+				usedata=USE
+				stdinuse=data
+				data="`cat`"
+				echo "Using data stream on STDIN"
+			else
+				echo "Can Not use Data from STDIN.  (Already in use for $stdinuse.)"
+			fi
+			shift
+			;;
+		-datafil)
+			if [ -r $2 ]
+			then
+				usedata=USE
+				data=`cat $2`
+				echo "$bname: getting pipe data from file:${2} ..."
+				shift
+			else
+				echo "$2 unreadable...  Exiting."
+				exit 1
+			fi
+			shift
+			;;
+		-key)
+			if [ -r $2 ]
+			then
+				useid=1
+				ident="$2"
+				shift
+				echo "Using Key File: $ident"
+			else
+				echo "Identity file '$2' not readable."
+				exit 1
+			fi
+			shift
+			;;
+		-d)
+			debug=1
+			shift
+			;;
+		-lic|-license)
+			showlic
+			shift
+			;;
+		*)
+			stop=1
+			;;
+	esac
+done
+
+if [ $batch = 1 ]
+then
+	sopts="-o BatchMode=yes $sopts"
+fi
+
+if [ $nopass = 1 ]
+then
+	sopts="-o PasswordAuthentication=no $sopts"
+fi
+
+if [ $trust = 1 ]
+then
+	sopts="-o StrictHostKeyChecking=no $sopts"
+fi
+
+if [ $useid = 1 ]
+then
+	sopts="-i $ident $sopts"
+fi
+
+if [ "${servertry:=blank}" != "blank" ]
+then
+	srv_list=`${servertry}`
+	ses=$?
+	if [ $ses != 0 ]
+	then
+		echo "Server command '$servertry' failed with status $ses"
+		exit 1
+	fi
+fi
+
+if [ "$getrup" = "1" ]
+then
+	echo "$bname: getting server list (rup)..."
+	skipfile=$HOME/bin/.rshskip
+	if [ -r $skipfile ]
+	then
+		cat $skipfile | awk '{gsub(/^\^|\$$/,"");ar[NR]=$0}END{if(NR>1)S="s";if(NR>=1)printf "Skipping host"S": ";for(i=1;i<NR;i++){printf ar[i]", "}{print}}'
+		srv_list=`rup | awk '{sub(/\..*/,"",$1);print $1}' | grep -v -f $skipfile | sort -u`
+	else
+		srv_list=`rup | awk '{sub(/\..*/,"",$1);print $1}' | sort -u`
+	fi
+fi
+
+if [ "$srv_list" = "none" ]
+then
+	if [ ${stdinuse:=blank} = "blank" ]
+	then
+		echo "Setting host list to STDIN (if interactive, [Ctrl+D to end list])."
+		srv_list=`cat`
+	else
+		echo "No server list found, and STDIN is reserverd for $stdinuse."
+	fi
+fi
+
+
+if [ $# -lt 1 -a "$interactive" = 0 ]
+then
+	echo "No command to execute.  ...Exiting."
+	echo ""
+	exit 1
+fi
+
+# Get the length of the longest host name in the list, and add two to that number for printf in single line return mode.
+mlen=`printf "%s\\n" $srv_list | awk '{len[NR] = length}END{mlen=1;for(i=1;i<=NR;i++)if(len[i] > mlen){mlen = len[i]};print mlen + 2}'`
+
+procnode() {
+	node=$1
+	shift # Have to make $* the same as before...
+	rnode=$node
+	rt=0
+	if [ ${suid:=blank} != "blank" ]
+	then
+		if [ "$rsh" = "ssh" ]
+		then 
+			node="$xforward $sopts ${suid}"'@'"${node}"
+		else
+			node="$node -l $suid"
+		fi
+	else
+		if [ "$rsh" = "ssh" ]
+		then 
+			node="$xforward $sopts $node"
+		fi
+	fi
+	if [ "$doping" = 1 ]
+	then
+		upornot="`$ping $rnode $parg 2>/dev/null | awk '{if(/trans/)print $4}'`"
+	else
+		upornot="1"
+	fi
+	if [ ${upornot:=blank} = "blank" ]
+	then
+		echo "$rnode does not seem to be resolving... Skipping."
+		rt=1
+	elif [ $upornot = "0" ]
+	then
+		echo "$rnode does not seem to be available right now... Skipping."
+		rt=1
+	else
+		if [ \( `echo $* | egrep -c 'inst|hinv'` = "1" \) -a  $background = 0 ]
+		then	# Give us a hint for processes known to take quite long without any output.
+			echo ""
+			echo ${rnode}...
+			echo ""
+		fi
+		if [ "$interactive" = 1 ]
+		then	# First, restore stdin (in case srv_list or data was `cat`)
+			exec 0< /dev/tty
+			if [ $debug = 1 ] ; then
+				echo "$rsh $node"
+			else
+				$rsh $node 
+			fi
+		else
+			if [ $debug = 1 ] ; then
+				echo "$rsh $node \"$*\""
+			else 
+				exec 4>&1
+				if [ ${usedata:=blank} = "blank" ]
+				then
+					if [ $se = 1 ] ; then
+						es="`(($rsh $node "$*" 2>/dev/null; echo "$?" >&3) | awk "$awkcmd" l=$mlen rall=$rsh host="$rnode" cmd="$*") 3>&1 >&4`"
+					else
+						es="`(($rsh $node "$*" 2>&1 ; echo "$?" >&3) | awk "$awkcmd" l=$mlen rall=$rsh host="$rnode" cmd="$*") 3>&1 >&4`"
+					fi
+				else
+					if [ $se = 1 ] ; then
+						es="`((echo "$data" | $rsh $node "$*" 2>/dev/null; echo "$?" >&3) | awk "$awkcmd" l=$mlen rall=$rsh host="$rnode" cmd="$*") 3>&1 >&4`"
+					else
+						es="`((echo "$data" | $rsh $node "$*" 2>&1 ; echo "$?" >&3) | awk "$awkcmd" l=$mlen rall=$rsh host="$rnode" cmd="$*") 3>&1 >&4`"
+					fi
+				fi
+				if [ $es != 0 ]; then rt=1 ; fi
+				exec 4>&-
+			fi
+		fi
+	fi
+	return $rt
+}
+
+for pnode in $srv_list
+do
+	if [ $delay = 1 ]
+	then
+		if [ $didone = 1 ]
+		then
+			sleep $sdelay
+		else
+			didone=1
+		fi
+	fi
+	if [ $background = 1 ]
+	then
+		procnode $pnode $* &
+		pnl="${pnl} $!"
+	else
+		procnode $pnode $*
+		ex=$(($ex + $?))
+	fi
+done
+
+if [ $dowait = 1 ]
+then
+	for p in $pnl
+	do
+		wait $p
+		ex=$(($ex + $?))
+	done
+fi
+
+exit $ex
+

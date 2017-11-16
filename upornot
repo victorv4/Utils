@@ -1,0 +1,255 @@
+#!/bin/sh
+
+version=1.09
+# ICMP query one or more hosts, optionally reporting
+# average roundtriptimes, and fastest host in group
+# Created by Victor E. Vaile, IV on 20020925
+# 1.00 20020925	Initial Version
+# 1.01 20070521	Added support for Cygwin ping
+# 1.02 20091027	Added colored output
+# 1.03 20121228	Added command line options for color
+#		Option to background pings
+# 1.04 20121228	Secondary variables for color escapes
+#		to simplify printed output
+# 1.05 20121231	Removed sort on server list
+#		Moved string detect from grep to awk
+# 1.06 20130102	Proper waiting for background process
+#		completion. Return number of failures
+#		in exit status
+# 1.07 20130209	Added help output and keeping track
+#		of ping times for reporting (when not
+#		run in background)
+# 1.08 20130412	Updated help, version, license info
+#		Added (this) info header
+# 1.09 20140304	Added Darwin to OS detection
+
+srv_list=''
+srv_try=''
+myuname=`uname`
+docolor=1
+dotime=0
+fastest=0
+redb="[1;31m"
+red="[31m"
+greenb="[1;32m"
+green="[32m"
+end="[0m"
+background=0
+nb=""
+yb=""
+en=""
+ex=0
+pnl=""
+pc=1
+to=1
+bname=`printf %s "$0" | sed -e "s/\/$//" -e "s/.*\///"`
+
+ShowVer() {
+	printf "$bname ($version) - ICMP host alive checking script\n"
+	exit 0
+}
+
+ShowHelp() {
+	printf "$bname ($version) - ICMP host alive checking script\n\nUsage: $0 [options] [host]\n"
+	printf "     %-9s %s\n" "-bg)"      "Execute tests in background."
+	printf "     %-9s %s\n" "-c)"       "Use Colors when reporting hosts status (default)"
+	printf "     %-9s %s\n" "-nc)"      "Do not use Colors when reporting hosts status"
+	printf "     %-9s %s\n" "-time)"    "Report average ping time (in millisecods) for live hosts"
+	printf "     %-9s %s\n" "-fastest)" "Report fastest ping time (in millisecods) for all live hosts"
+	printf "     %-9s %s\n" "-f) \$fil" "Read file \$fil for host list (Use '-' for stdin)"
+	printf "     %-9s %s\n" "-h[elp])"       "Display this help and exit"
+	printf "     %-9s %s\n" "-lic)"     "Display Software License and exit"
+	printf "     %-9s %s\n" "[host]"    "Report ICMP live status of host"
+	printf "\n"
+	exit 0
+}
+
+ShowLic() { # Display license
+	printf "Copyright © 2002-2013 Victor E. Vaile, IV. All Rights Reserved.\n\n";
+	printf "Redistribution and use in source and binary forms, with or without modification,\n";
+	printf "are permitted provided that the following conditions are met:\n\n";
+	printf "1. Redistributions of source code must retain the above copyright notice, this\n";
+	printf "   list of conditions and the following disclaimer.\n\n";
+	printf "2. Redistributions in binary form must reproduce the above copyright notice,\n";
+	printf "   this list of conditions and the following disclaimer in the documentation\n";
+	printf "   and/or other materials provided with the distribution.\n\n";
+	printf "3. The name of the author may not be used to endorse or promote products derived\n";
+	printf "   from this software without specific prior written permission.\n\n";
+	printf "THIS SOFTWARE IS PROVIDED BY THE AUTHOR \"AS IS\" AND ANY EXPRESS OR IMPLIED\n";
+	printf "WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF\n";
+	printf "MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT\n";
+	printf "SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,\n";
+	printf "EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT\n";
+	printf "OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS\n";
+	printf "INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN\n";
+	printf "CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING\n";
+	printf "IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY\n";
+	printf "OF SUCH DAMAGE.\n\n";
+	printf "* That being said, if you find a bug, feel free to report it to the author. :)\n\n";
+	exit 0;
+}
+
+while  [ $# -ge 1 ]
+do
+	case $1 in
+		-bg)
+			background=1
+			shift
+			;;
+		-c)
+			docolor=1
+			shift
+			;;
+		-nc)
+			docolor=0
+			shift
+			;;
+		-time)
+			dotime=1
+			pc=3
+			to=3
+			shift
+			;;
+		-fastest)
+			fastest=1
+			dotime=1
+			pc=3
+			to=3
+			shift
+			;;
+		-f)
+			if [ $2 = "-" ]
+			then
+				srv_list=`cat`
+				echo "getting server list (stdin) ..."
+			elif [ -r $2 ]
+			then
+				srv_list=`cat $2`
+				echo "getting server list file:${2} ..."
+			else
+				echo "$2 unreadable...  Exiting."
+				exit 1
+			fi
+			shift
+			shift
+			;;
+		-h|-help)
+			ShowHelp
+			shift
+			;;
+		-lic|-license)
+			ShowLic
+			shift
+			;;
+		-v|-ver|-version)
+			ShowVer
+			shift
+			;;
+		*)
+			srv_try="$srv_try $1"
+			shift
+			;;
+	esac
+done
+
+if [ "${myuname}" = "FreeBSD" -o "${myuname}" = "Darwin" ]
+then
+	ping="ping -c $pc -t $to"
+	parg=''
+elif [ "${myuname}" = "CYGWIN_NT-5.0" -o "${myuname}" = "CYGWIN_NT-5.1" -o "${myuname}" = "CYGWIN_NT-5.2" ]
+then
+	ping='ping'
+	parg="56 $pc"
+else
+	ping="ping -c $pc -w $to"
+	parg=''
+fi
+
+set -- $srv_try
+if [ "${srv_list:=blank}" = "blank" ]
+then
+	srv_list="$*"
+	if [ $# -lt 1 ]
+	then
+		#echo "Setting host list to STDIN (or interactive [Ctrl+D to end list])."
+		srv_list=`cat`
+	fi
+fi
+
+if [ $docolor = 1 ] 
+then
+	nb="${red}"
+	yb="${green}"
+	en="${end}"
+fi
+
+doping() {
+	rt=0
+	node=$1
+	#upornot="`$ping $node $parg 2>/dev/null | awk '{if(/trans/)print $4}'`"
+	wholeping="`$ping $node $parg 2>/dev/null`"
+	#echo "WholePing: $wholeping"
+	upornot=`echo "$wholeping" | awk '{if(/packets transmitted/)print $4}'`
+	if [ ${upornot:=blank} = "blank" ]
+	then
+		echo "$node does not seem to be resolving... Skipping."
+		rt=1
+	elif [ $upornot = "0" ]
+	then
+		echo "${nb}$node not available${en}"
+		rt=1
+	else
+		if [ $dotime = 1 ]
+		then
+			avgtime=`echo "$wholeping" | awk -F/ '{if(/(^rtt|round-trip)/)print $5}'`
+			if [ $fastest = 1 ] && [ $background = 0 ]; then
+				if [ ${quick:=blank } = "blank" ] ; then
+					quick=$avgtime
+					quickn="$node"
+				else
+					smaller=`echo "$avgtime < $quick" | bc`
+					if [ $smaller = 1 ] ; then
+						quick=$avgtime
+						quickn="$node"
+					fi
+				fi
+			fi
+			#echo "${yb}$node is up ($avgtime) ${en}"
+			echo "${yb}[$avgtime] $node is up ${en}"
+		else
+			echo "${yb}$node is up ${en}"
+		fi
+		return $rt
+	fi
+}
+if [ $fastest = 1 ] && [ $background = 1 ]; then
+	printf "\n%s\n\n" "Warning, this shell isn't cool enough to have background jobs nicely modify global variables"
+fi
+
+for pnode in $srv_list
+do
+	if [ $background = 1 ]
+	then
+		doping $pnode &
+		pnl="${pnl} $!"
+	else
+		doping $pnode
+		ex=$(($ex + $?))
+	fi
+done
+
+if [ $background = 1 ]
+then
+	for p in $pnl
+	do
+		wait $p
+		ex=$(($ex + $?))
+	done
+fi
+
+if [ $fastest = 1 ] && [ $background = 0 ]; then
+	printf "\n%s\n\n" "Fastest ping: $quickn ($quick ms)"
+fi
+
+exit $ex
+

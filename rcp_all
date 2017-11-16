@@ -1,0 +1,458 @@
+#!/bin/sh -f
+
+version=2.62
+# This script can be used to copy file paths to multiple hosts.
+# Maintained by Victor E. Vaile, IV
+# Pertinent features in lockstep with rsh_all script
+
+background=0
+stop=0
+srv_list=none
+rcp=scp
+myuname=`uname`
+parg=''
+src=''
+opts=''
+sopts="-o ConnectTimeout=10"
+trust=0
+batch=0
+useid=0
+getrup=0
+awkcmd='{rb[NR]=$0}END{if(NR<=1){printf "%-"l"s%s\n", host":", rb[NR]}else{print "### "rall" "src" "dst;for(i=1;i<=NR;i++){print rb[i]}}}'
+bname=`printf %s "$0" | sed -e "s/\/$//" -e "s/.*\///"`
+ex=0
+dowait=1
+pnl=''
+debug=0
+doping=1
+ident=""
+delay=0
+sdelay=1
+didone=0
+
+warnfail() { # Define this now for the command line parsing
+	echo $1
+	exit
+}
+
+showlic() { # Display license
+	printf "Copyright © 2000-2013 Victor E. Vaile, IV. All Rights Reserved.\n\n";
+	printf "Redistribution and use in source and binary forms, with or without modification,\n";
+	printf "are permitted provided that the following conditions are met:\n\n";
+	printf "1. Redistributions of source code must retain the above copyright notice, this\n";
+	printf "   list of conditions and the following disclaimer.\n\n";
+	printf "2. Redistributions in binary form must reproduce the above copyright notice,\n";
+	printf "   this list of conditions and the following disclaimer in the documentation\n";
+	printf "   and/or other materials provided with the distribution.\n\n";
+	printf "3. The name of the author may not be used to endorse or promote products derived\n";
+	printf "   from this software without specific prior written permission.\n\n";
+	printf "THIS SOFTWARE IS PROVIDED BY THE AUTHOR \"AS IS\" AND ANY EXPRESS OR IMPLIED\n";
+	printf "WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF\n";
+	printf "MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT\n";
+	printf "SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,\n";
+	printf "EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT\n";
+	printf "OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS\n";
+	printf "INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN\n";
+	printf "CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING\n";
+	printf "IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY\n";
+	printf "OF SUCH DAMAGE.\n\n";
+	printf "* That being said, if you find a bug, feel free to report it to the author. :)\n\n";
+	exit 0;
+}
+
+if [ \( $# -lt 1 \) -o \( "$1" = "-help" \) -o \( "$1" = "-h" \) ]
+then
+	echo "$bname ($version) - copies paths to multiple remote hosts"
+	echo "usage: $bname [ options ] <source path(s)> <destination path>"
+	echo ""
+	echo "options:"
+	echo ""
+	echo "	-f [<hosts_file> | - ]"
+	echo "	gets list of hosts from named file or stdin"
+	echo ""
+	echo "	-m \"host list\""
+	echo "	gets list of hosts from command line"
+	echo "	(within double quotes)"
+	echo ""
+	echo "	-c \"server command\""
+	echo "	gets list of hosts from specified server command"
+	echo ""
+	echo "	-rup"
+	echo "	use rup to get host list"
+	echo "	You can use an optional file in your \$HOME/bin directory"
+	echo "	called .rshskip to explicitly skip certain servers when using rup"
+	echo "	using the line syntax: ^server\$"
+	echo ""
+	echo "	-s"
+	echo "	uses scp instead of rcp (default)"
+	echo ""
+	echo "	-rcp"
+	echo "	use rcp instead of scp"
+	echo ""
+	echo "	-su \"userid\""
+	echo "	uses userid@host for each host"
+	echo ""
+	echo "	-p"
+	echo "	preserves permissions"
+	echo ""
+	echo "	-r"
+	echo "	copies recursively"
+	echo ""
+	echo "	-bg"
+	echo "	runs all per-host scp/rcp processes in background for faster return"
+	echo "	(host order cannot be preserved and multi-line output may be garbled.)"
+	echo ""
+	echo "	-noping"
+	echo "	ignore pingable state of host (othewise skips un-pingable hosts)"
+	echo ""
+	echo "	-trust"
+	echo "	when using scp, skip strict host key checking for remote host(s)"
+	echo ""
+	echo ""
+	echo "	-w"
+	echo "	wait - when tasks are executed in background, wait for all to finish"
+	echo "	this is the default behavior, and is required to collect exit statuses."
+	echo ""
+	echo "	-nw"
+	echo "	nowait - when tasks are executed in background, exit immediately"
+	echo ""
+	echo "	-delay"
+	echo "	when tasks are executed in background, pause for {sdelay} seconds (default 1) between executions "
+	echo ""
+	echo "	-dv \$val"
+	echo "	set value of {sdelay} to \$val (implies -delay)"
+	echo ""
+	echo "	-d"
+	echo "	Debug mode. (echo commands only)"
+	echo ""
+	echo "	ex:	$bname -f mylist .vimrc ."
+	echo "	  copies .vimrc to all machines in file: mylist"
+	echo ""
+	echo "	-help"
+	echo "	Display this help text, and exit."
+	echo ""
+	echo "	-license"
+	echo "	Display Software License, and exit."
+	echo ""
+	exit 0
+fi
+
+
+if [ "${myuname}" = "FreeBSD"  -o "${myuname}" = "Darwin" ]
+then
+	ping='ping -c 1 -t 2'
+elif [ "${myuname}" = "CYGWIN_NT-5.1" -o "${myuname}" = "CYGWIN_NT-5.2" ]
+then
+	ping='ping'
+	parg='56 1'
+else	# (System V, Linux, POSIX)
+	ping='ping -c 1 -w 1'
+fi
+
+while [ $# -ge 1 ] && [ $stop = 0 ]
+do
+	case $1 in
+		-bg)
+			background=1
+			batch=1
+			shift
+			;;
+		-fg)
+			background=0
+			batch=0
+			shift
+			;;
+		-w)
+			dowait=1
+			shift
+			;;
+		-nw)
+			dowait=0
+			shift
+			;;
+		-delay)
+			delay=1
+			shift
+			;;
+		-dv)
+			echo $2 | grep -q '^[0-9][0-9]*$' && export sdelay=$2 || warnfail "Invalid delay '$2'"
+			delay=1
+			shift
+			shift
+			;;
+		-noping)
+			doping=0
+			shift
+			;;
+		-f)
+			if [ $2 = "-" ]
+			then
+				srv_list=`cat`
+				echo "$bname: getting server list (stdin) ..."
+				shift
+				shift
+			elif [ -r $2 ]
+			then
+				srv_list=`cat $2`
+				echo "$bname: getting server list file:${2} ..."
+				shift
+				shift
+			else
+				echo "$2 unreadable...  Exiting."
+				shift
+				exit 1
+			fi
+			;;
+		-c)
+			if [ "${2:=blank}" != "blank" ] 
+			then
+				servertry="$2"
+				echo "Using command '$servertry' for server list."
+				shift
+			else
+				echo "Warning: No server command given"
+			fi
+			shift
+			;;
+		-m)
+			srv_list=$2
+			echo "$bname: server list ( $srv_list ) ..."
+			shift
+			shift
+			;;
+		-rup)
+			getrup=1
+			shift
+			;;
+		-rcp)
+			rcp=rcp
+			shift
+			;;
+		-s)
+			rcp=scp
+			shift
+			;;
+		-su)
+			suid=$2
+			echo "Using userid $suid."
+			shift
+			shift
+			;;
+		-trust)
+			trust=1
+			shift
+			;;
+		-notrust)
+			trust=0
+			shift
+			;;
+		-B|-batch)
+			batch=1
+			shift
+			;;
+		-prompt)
+			batch=0
+			shift
+			;;
+		-dst)
+			dst=$2
+			echo "Using destination: '$dst'."
+			shift
+			shift
+			;;
+		-p)
+			opts="${opts} -p"
+			echo "Preserving permissions"
+			shift
+			;;
+		-r)
+			opts="${opts} -r"
+			echo "Using Recusive copy."
+			shift
+			;;
+		-v)
+			opts="${opts} -v"
+			echo "Using verbose mode"
+			shift
+			;;
+		-key)
+			if [ -r $2 ]
+			then
+				useid=1
+				ident="$2"
+				shift
+				echo "Using Key File: $ident"
+			else
+				echo "Identity file '$2' not readable."
+				exit 1
+			fi
+			shift
+			;;
+		-d)
+			debug=1
+			shift
+			;;
+		-lic|-license)
+			showlic
+			shift
+			;;
+		*)
+			stop=1
+			;;
+	esac
+done
+
+if [ $batch = 1 ]
+then
+	sopts="-o BatchMode=yes $sopts"
+fi
+
+if [ $trust = 1 ]
+then
+	sopts="-o StrictHostKeyChecking=no $sopts"
+fi
+
+if [ "${sopts:=blank}" != "blank" ]
+then
+	if [ "$rcp" = "scp" ]
+	then
+		opts="$sopts $opts"
+	fi
+fi
+
+if [ $useid = 1 ]
+then
+	sopts="-i $ident $sopts"
+fi
+
+if [ "${servertry:=blank}" != "blank" ]
+then
+	srv_list=`${servertry}`
+	ses=$?
+	if [ $ses != 0 ]
+	then
+		echo "Server command '$servertry' failed with status $ses"
+		exit 1
+	fi
+fi
+
+if [ "$getrup" = "1" ]
+then
+	echo "$bname: getting server list (rup)..."
+	skipfile=$HOME/bin/.rshskip
+	if [ -r $skipfile ]
+	then
+		cat $skipfile | awk '{gsub(/^\^|\$$/,"");ar[NR]=$0}END{if(NR>1)S="s";if(NR>=1)printf "Skipping host"S": ";for(i=1;i<NR;i++){printf ar[i]", "}{print}}'
+		srv_list=`rup | awk '{sub(/\..*/,"",$1);print $1}' | grep -v -f $skipfile | sort -u`
+	else
+		srv_list=`rup | awk '{sub(/\..*/,"",$1);print $1}' | sort -u`
+	fi
+fi
+
+if [ "$srv_list" = "none" ]
+then
+	echo "Setting host list to STDIN (if interactive, [Ctrl+D to end list])."
+	srv_list=`cat`
+fi
+
+if [ $# -lt 1 ]
+then
+	echo "No files to copy.  ...Exiting."
+	echo ""
+	exit 1
+else
+	if [ ${dst:=blank} != "blank" ]
+	then
+		while [ $# -ge 1 ]
+		do
+			src="$src $1"
+			shift
+		done
+	else
+		if [ $# -lt 2 ]
+		then
+			echo "No files to copy to $1.  ...Exiting."
+			echo ""
+			exit 1
+		else
+			while [ $# -gt 1 ]
+			do
+				src="$src $1"
+				shift
+			done
+			dst="$1"
+			echo "Using destination: '$dst'."
+		fi
+	fi
+fi
+
+# Get the length of the longest host name in the list, and add two to that number for printf in single line return mode.
+mlen=`printf "%s\\n" $srv_list | awk '{len[NR] = length}END{mlen=1;for(i=1;i<=NR;i++)if(len[i] > mlen){mlen = len[i]};print mlen + 2}'`
+
+procnode() {
+	node=$1
+	rnode=$node
+	rt=0
+	if [ ${suid:=blank} != "blank" ]
+	then
+		node="$suid""@""$node"
+	fi
+	if [ "$doping" = 1 ]
+	then
+		upornot="`$ping $rnode $parg 2>/dev/null | awk '{if(/trans/)print $4}'`"
+	else
+		upornot="1"
+	fi
+	if [ ${upornot:=blank} = "blank" ]
+	then
+		echo "$rnode does not seem to be resolving... Skipping."
+		rt=1
+	elif [ $upornot = "0" ]
+	then
+		echo "$rnode does not seem to be available right now... Skipping."
+		rt=1
+	else
+		if [ $debug = 1 ] ; then
+			echo "$rcp $opts $src ${node}:${dst}"
+		else
+			exec 4>&1
+			es="`(($rcp $opts $src ${node}:${dst} 2>&1 ; echo "$?" >&3) | awk "$awkcmd" l=$mlen rall=$rcp host="$rnode" src="$src" dst="$dst") 3>&1 >&4`"
+			if [ $es != 0 ]; then rt=1 ; fi
+			exec 4>&-
+		fi
+	fi
+	return $rt
+}
+
+for pnode in $srv_list
+do
+	if [ $delay = 1 ]
+	then
+		if [ $didone = 1 ]
+		then
+			sleep $sdelay
+		else
+			didone=1
+		fi
+	fi
+	if [ $background = 1 ]
+	then
+		procnode $pnode &
+		pnl="${pnl} $!"
+	else
+		procnode $pnode
+		ex=$(($ex + $?))
+	fi
+done
+
+if [ $dowait = 1 ]
+then
+	for p in $pnl
+	do
+		wait $p
+		ex=$(($ex + $?))
+	done
+fi
+
+exit $ex
+
